@@ -17,3 +17,5 @@ diagnose_output.txt
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+*.old
+

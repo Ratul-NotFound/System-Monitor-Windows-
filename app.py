@@ -938,8 +938,11 @@ class SystemMonitorWidget:
                         else:
                             temp_color = theme["text"]
                         temp_text = f" ({self.cpu_temp}°C)"
-                        self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="cpu_click")
-                        x += self.label_font.measure(temp_text)
+                    else:
+                        temp_color = "#F59E0B"
+                        temp_text = " (⚠️)"
+                    self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="cpu_click")
+                    x += self.label_font.measure(temp_text)
                     
                     x += 6
                     
@@ -989,8 +992,11 @@ class SystemMonitorWidget:
                         else:
                             temp_color = theme["text"]
                         temp_text = f" ({self.gpu_temp}°C)"
-                        self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="gpu_click")
-                        x += self.label_font.measure(temp_text)
+                    else:
+                        temp_color = "#F59E0B"
+                        temp_text = " (⚠️)"
+                    self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="gpu_click")
+                    x += self.label_font.measure(temp_text)
                         
                     x += 6
                     
@@ -1122,10 +1128,20 @@ class SystemMonitorWidget:
                 
         net_details = f"\nNET: {self.net_speed_text}"
         
-        # Add UAC elevation hint if running unelevated and temperatures are missing
+        # Add UAC elevation or Core Isolation / Memory Integrity warning if temperatures are missing
         admin_hint = ""
-        if not is_admin() and (self.cpu_temp is None or (self.gpu_detected and self.gpu_temp is None)):
-            admin_hint = "\n\n⚠️ Run as Administrator to enable CPU/GPU temperatures."
+        if self.cpu_temp is None or (self.gpu_detected and self.gpu_temp is None):
+            if not is_admin():
+                admin_hint = "\n\n⚠️ Run as Administrator to enable CPU/GPU temperatures."
+            else:
+                admin_hint = (
+                    "\n\n⚠️ Temperature readings are blocked.\n"
+                    "Windows 11 Memory Integrity / Core Isolation is likely blocking the driver.\n"
+                    "How to fix:\n"
+                    "1. Open Windows Security -> Device Security -> Core Isolation -> disable Memory Integrity.\n"
+                    "2. Or, add an exclusion in Microsoft Defender for this widget's folder.\n"
+                    "3. Or, run HWiNFO64 (with Gadget mode reporting enabled) or CoreTemp in the background."
+                )
         
         return f"{cpu_details}\n{ram_details}{gpu_details}{net_details}{admin_hint}\n\n💡 Click modules to open system monitors."
 
