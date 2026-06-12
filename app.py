@@ -328,7 +328,11 @@ class SystemMonitorWidget:
         self.lhm_computer = None
         try:
             import clr
-            dll_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LibreHardwareMonitorLib.dll")
+            lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
+            if lib_path not in sys.path:
+                sys.path.append(lib_path)
+            
+            dll_path = os.path.join(lib_path, "LibreHardwareMonitorLib.dll")
             if os.path.exists(dll_path):
                 clr.AddReference(dll_path)
                 from LibreHardwareMonitor.Hardware import Computer, SensorType
