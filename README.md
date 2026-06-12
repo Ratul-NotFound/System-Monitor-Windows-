@@ -1,5 +1,7 @@
 # System Monitor Widget 🖥️⚡
 
+[![Download Standalone Executable](https://img.shields.io/badge/Download-sys__monitor.exe-brightgreen?style=for-the-badge&logo=windows)](https://github.com/Ratul-NotFound/System-Monitor-Windows-/raw/main/bin/sys_monitor.exe)
+
 A lightweight, always-on-top, floating PC performance monitor widget for Windows. Designed with inspiration from the Ubuntu status bar and GNOME extensions, this widget sits unobtrusively on your screen, providing high-contrast, real-time system metrics with ultra-low resource usage.
 
 ---
