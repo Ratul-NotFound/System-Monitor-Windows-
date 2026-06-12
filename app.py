@@ -368,11 +368,19 @@ class SystemMonitorWidget:
                 temps = []
                 for hw in self.lhm_computer.Hardware:
                     hw.Update()
+                    is_cpu = "cpu" in str(hw.HardwareType).lower()
                     for s in hw.Sensors:
                         if s.SensorType == self.lhm_sensor_type.Temperature:
-                            if "Core" in s.Name or "Package" in s.Name:
+                            if is_cpu:
+                                # For CPU hardware, collect ALL temperature sensors (e.g. Core #1, CPU Package, Core Max)
                                 if s.Value is not None and s.Value > 0:
                                     temps.append(s.Value)
+                            else:
+                                # For non-CPU hardware, fallback to checking sensor names for CPU tags
+                                s_name = s.Name.lower()
+                                if "cpu" in s_name or "core" in s_name or "package" in s_name:
+                                    if s.Value is not None and s.Value > 0:
+                                        temps.append(s.Value)
                 if temps:
                     return round(max(temps))
             except Exception:
@@ -384,7 +392,7 @@ class SystemMonitorWidget:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             res = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", 
-                 "(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction SilentlyContinue | Where-Object {$_.SensorType -eq 'Temperature' -and ($_.Name -like '*Core*' -or $_.Name -like '*Package*')}).Value"],
+                 "(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction SilentlyContinue | Where-Object {$_.SensorType -eq 'Temperature' -and ($_.Name -like '*Core*' -or $_.Name -like '*Package*' -or $_.Name -like '*CPU*')}).Value"],
                 startupinfo=startupinfo,
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 timeout=1
@@ -395,7 +403,7 @@ class SystemMonitorWidget:
         except Exception:
             pass
 
-        # 3. Try standard Windows ACPI thermal zone WMI fallback
+        # 3. Try standard Windows ACPI thermal zone WMI fallback (scan all zones)
         try:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -407,11 +415,17 @@ class SystemMonitorWidget:
                 timeout=1
             )
             lines = res.decode().strip().split()
-            if lines:
-                temp_k = float(lines[0])
-                temp_c = (temp_k - 2732) / 10.0
-                if 0 < temp_c < 150:
-                    return round(temp_c)
+            valid_temps = []
+            for line in lines:
+                try:
+                    temp_k = float(line.strip())
+                    temp_c = (temp_k - 2732) / 10.0
+                    if 15 < temp_c < 115:
+                        valid_temps.append(temp_c)
+                except Exception:
+                    pass
+            if valid_temps:
+                return round(max(valid_temps))
         except Exception:
             pass
             
@@ -1083,7 +1097,12 @@ class SystemMonitorWidget:
                 
         net_details = f"\nNET: {self.net_speed_text}"
         
-        return f"{cpu_details}\n{ram_details}{gpu_details}{net_details}\n\n💡 Click modules to open system monitors."
+        # Add UAC elevation hint if running unelevated and temperatures are missing
+        admin_hint = ""
+        if not is_admin() and (self.cpu_temp is None or (self.gpu_detected and self.gpu_temp is None)):
+            admin_hint = "\n\n⚠️ Run as Administrator to enable CPU/GPU temperatures."
+        
+        return f"{cpu_details}\n{ram_details}{gpu_details}{net_details}{admin_hint}\n\n💡 Click modules to open system monitors."
 
     def cleanup(self):
         self.running = False
