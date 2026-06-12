@@ -16,6 +16,44 @@ def is_admin():
     except Exception:
         return False
 
+class Tooltip:
+    def __init__(self, widget):
+        self.widget = widget
+        self.tipwindow = None
+        self.id = None
+        self.x = self.y = 0
+
+    def showtip(self, text):
+        self.text = text
+        if self.tipwindow or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(1)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.wm_attributes("-topmost", True)
+        label = tk.Label(
+            tw, 
+            text=self.text, 
+            justify=tk.LEFT,
+            background="#1E1E24", 
+            foreground="#FFFFFF", 
+            relief=tk.FLAT, 
+            border=1,
+            padx=8, 
+            pady=6,
+            font=("Segoe UI", 9)
+        )
+        label.pack(ipadx=1)
+        tw.config(background="#FF6F3B")
+
+    def hidetip(self):
+        tw = self.tipwindow
+        self.tipwindow = None
+        if tw:
+            tw.destroy()
+
 CONFIG_FILE = "config.json"
 
 THEMES = {
@@ -73,6 +111,11 @@ class SystemMonitorWidget:
         self.theme_name = self.config.get("theme", "Ubuntu Dark")
         self.compact_mode = self.config.get("compact_mode", False)
         
+        # Extended GUI Preferences
+        self.lock_position = self.config.get("lock_position", False)
+        self.widget_scale = self.config.get("widget_scale", "Medium")
+        self.show_sparklines = self.config.get("show_sparklines", True)
+        
         # Module visibilities
         self.show_cpu = self.config.get("show_cpu", True)
         self.show_ram = self.config.get("show_ram", True)
@@ -97,10 +140,9 @@ class SystemMonitorWidget:
         # Initialize native LibreHardwareMonitor DLL
         self.init_libre_hardware_monitor()
         
-        # Dimensions & Fonts
-        self.height = 24  # Space-efficient height
+        # Dimensions & Fonts (dynamic via scale)
         self.corner_radius = 6
-        self.label_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        self.update_scale_parameters()
         
         # Calculate dynamic size
         self.width = self.calculate_width()
@@ -144,6 +186,18 @@ class SystemMonitorWidget:
         self.build_menu()
         self.canvas.bind("<Button-3>", self.show_menu)
         
+        # Tooltip and Hover Fade bindings
+        self.tooltip = Tooltip(self.canvas)
+        self.canvas.bind("<Enter>", self.show_widget_tip)
+        self.canvas.bind("<Leave>", self.hide_widget_tip)
+        self.canvas.bind("<Motion>", self.move_widget_tip)
+        
+        # Interactive Module bindings (clicks to open Windows monitors)
+        self.canvas.tag_bind("cpu_click", "<Button-1>", lambda e: self.open_utility("cpu"))
+        self.canvas.tag_bind("ram_click", "<Button-1>", lambda e: self.open_utility("ram"))
+        self.canvas.tag_bind("gpu_click", "<Button-1>", lambda e: self.open_utility("gpu"))
+        self.canvas.tag_bind("net_click", "<Button-1>", lambda e: self.open_utility("net"))
+        
         # Asynchronous stats thread
         self.running = True
         self.stats_thread = threading.Thread(target=self.stats_collector_loop, daemon=True)
@@ -172,7 +226,10 @@ class SystemMonitorWidget:
             "show_cpu": self.show_cpu,
             "show_ram": self.show_ram,
             "show_gpu": self.show_gpu,
-            "show_net": self.show_net
+            "show_net": self.show_net,
+            "lock_position": self.lock_position,
+            "widget_scale": self.widget_scale,
+            "show_sparklines": self.show_sparklines
         }
         try:
             with open(CONFIG_FILE, "w") as f:
@@ -377,22 +434,25 @@ class SystemMonitorWidget:
                 w += self.label_font.measure("CPU ")
                 temp_str = f" {self.cpu_temp}°C" if self.cpu_temp else ""
                 w += self.label_font.measure(f"{self.cpu_usage:.0f}%{temp_str}") + 6
-                w += 20 # Sparkline width
+                if self.show_sparklines:
+                    w += self.spark_width
             elif mod == "ram":
                 w += self.label_font.measure("RAM ")
                 w += self.label_font.measure(f"{self.ram_usage:.0f}%") + 6
-                w += 20 # Sparkline width
+                if self.show_sparklines:
+                    w += self.spark_width
             elif mod == "gpu":
                 w += self.label_font.measure("GPU ")
                 temp_str = f" {self.gpu_temp}°C" if self.gpu_temp else ""
                 w += self.label_font.measure(f"{self.gpu_usage:.0f}%{temp_str}") + 6
-                w += 20 # Sparkline width
+                if self.show_sparklines:
+                    w += self.spark_width
             elif mod == "net":
                 w += self.label_font.measure("NET ")
                 w += self.label_font.measure(self.net_speed_text)
                 
-        # End padding
-        w += 12
+        # End padding with safety margin to prevent cropping
+        w += 16
         return max(w, 26)
 
     def build_menu(self):
@@ -405,6 +465,13 @@ class SystemMonitorWidget:
             variable=tk.BooleanVar(value=self.always_on_top)
         )
         
+        # Lock position
+        self.menu.add_checkbutton(
+            label="Lock Position",
+            command=self.toggle_lock_position,
+            variable=tk.BooleanVar(value=self.lock_position)
+        )
+        
         # Startup setting
         self.menu.add_checkbutton(
             label="Start with Windows",
@@ -414,6 +481,12 @@ class SystemMonitorWidget:
         
         self.menu.add_separator()
         
+        # Docking presets submenu
+        dock_menu = Menu(self.menu, tearoff=0)
+        for pos in ["Top-Left", "Top-Center", "Top-Right", "Bottom-Left", "Bottom-Right"]:
+            dock_menu.add_command(label=pos, command=lambda p=pos: self.dock_widget(p))
+        self.menu.add_cascade(label="Dock Preset", menu=dock_menu)
+        
         # Modular views submenu
         views_menu = Menu(self.menu, tearoff=0)
         views_menu.add_checkbutton(label="Show CPU", command=lambda: self.toggle_module("cpu"), variable=tk.BooleanVar(value=self.show_cpu))
@@ -421,7 +494,20 @@ class SystemMonitorWidget:
         if self.gpu_detected:
             views_menu.add_checkbutton(label="Show GPU", command=lambda: self.toggle_module("gpu"), variable=tk.BooleanVar(value=self.show_gpu))
         views_menu.add_checkbutton(label="Show Network", command=lambda: self.toggle_module("net"), variable=tk.BooleanVar(value=self.show_net))
+        views_menu.add_separator()
+        views_menu.add_checkbutton(label="Show Sparklines", command=self.toggle_sparklines, variable=tk.BooleanVar(value=self.show_sparklines))
         self.menu.add_cascade(label="Modules", menu=views_menu)
+        
+        # Widget size scaling submenu
+        scale_menu = Menu(self.menu, tearoff=0)
+        for sc in ["Small", "Medium", "Large"]:
+            scale_menu.add_radiobutton(
+                label=sc,
+                command=lambda val=sc: self.set_scale(val),
+                variable=tk.StringVar(value=self.widget_scale),
+                value=sc
+            )
+        self.menu.add_cascade(label="Widget Size", menu=scale_menu)
         
         # Opacity submenu
         opacity_menu = Menu(self.menu, tearoff=0)
@@ -601,6 +687,8 @@ class SystemMonitorWidget:
         self.root.y = event.y
 
     def drag(self, event):
+        if self.lock_position:
+            return
         if self.root.x is None or self.root.y is None:
             return
         dx = event.x - self.root.x
@@ -698,12 +786,12 @@ class SystemMonitorWidget:
     def draw_sparkline(self, x, y, value, theme):
         # Draw small background track
         self.canvas.create_rectangle(
-            x, y, x + 20, y + 4, 
+            x, y, x + self.spark_width, y + 4, 
             fill=theme["muted"], 
             outline=""
         )
         # Draw levels
-        fill_w = int((min(max(value, 0), 100) / 100) * 20)
+        fill_w = int((min(max(value, 0), 100) / 100) * self.spark_width)
         level_color = theme["accent"]
         
         # High load alerts
@@ -749,8 +837,11 @@ class SystemMonitorWidget:
             elif avg_load > 60:
                 dot_color = "#F59E0B"
                 
+            # Pulsing dot centering
+            r = 4 if self.widget_scale == "Small" else (6 if self.widget_scale == "Large" else 5)
+            cy = self.height // 2
             self.canvas.create_oval(
-                9, 8, 17, 16, 
+                13 - r, cy - r, 13 + r, cy + r, 
                 fill=dot_color, 
                 outline=""
             )
@@ -772,7 +863,7 @@ class SystemMonitorWidget:
                 if i > 0:
                     sep = " | "
                     self.canvas.create_text(
-                        x, 12, 
+                        x, self.height // 2, 
                         text=sep, 
                         fill=theme.get("muted_text", "#71717A"), 
                         font=self.label_font, 
@@ -782,59 +873,208 @@ class SystemMonitorWidget:
                     
                 if mod == "cpu":
                     # Label
-                    self.canvas.create_text(x, 12, text="CPU ", fill=theme["accent"], font=self.label_font, anchor="w")
+                    self.canvas.create_text(x, self.height // 2, text="CPU ", fill=theme["accent"], font=self.label_font, anchor="w", tags="cpu_click")
                     x += self.label_font.measure("CPU ")
                     
                     # Value
-                    temp_str = f" {self.cpu_temp}°C" if self.cpu_temp else ""
-                    val_text = f"{self.cpu_usage:.0f}%{temp_str}"
-                    self.canvas.create_text(x, 12, text=val_text, fill=theme["text"], font=self.label_font, anchor="w")
-                    x += self.label_font.measure(val_text) + 6
+                    cpu_percent_text = f"{self.cpu_usage:.0f}%"
+                    self.canvas.create_text(x, self.height // 2, text=cpu_percent_text, fill=theme["text"], font=self.label_font, anchor="w", tags="cpu_click")
+                    x += self.label_font.measure(cpu_percent_text)
+                    
+                    # Temperature
+                    if self.cpu_temp is not None:
+                        if self.cpu_temp >= 80:
+                            temp_color = "#EF4444"
+                        elif self.cpu_temp >= 60:
+                            temp_color = "#F59E0B"
+                        else:
+                            temp_color = theme["text"]
+                        temp_text = f" ({self.cpu_temp}°C)"
+                        self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="cpu_click")
+                        x += self.label_font.measure(temp_text)
+                    
+                    x += 6
                     
                     # Sparkline
-                    self.draw_sparkline(x, 10, self.cpu_usage, theme)
-                    x += 20
+                    if self.show_sparklines:
+                        spark_y = (self.height - 4) // 2
+                        self.draw_sparkline(x, spark_y, self.cpu_usage, theme)
+                        x += self.spark_width
                     
                 elif mod == "ram":
                     # Label
-                    self.canvas.create_text(x, 12, text="RAM ", fill=theme["accent"], font=self.label_font, anchor="w")
+                    self.canvas.create_text(x, self.height // 2, text="RAM ", fill=theme["accent"], font=self.label_font, anchor="w", tags="ram_click")
                     x += self.label_font.measure("RAM ")
                     
                     # Value
                     val_text = f"{self.ram_usage:.0f}%"
-                    self.canvas.create_text(x, 12, text=val_text, fill=theme["text"], font=self.label_font, anchor="w")
+                    ram_color = theme["text"]
+                    if self.ram_usage >= 85:
+                        ram_color = "#EF4444"
+                    elif self.ram_usage >= 70:
+                        ram_color = "#F59E0B"
+                    self.canvas.create_text(x, self.height // 2, text=val_text, fill=ram_color, font=self.label_font, anchor="w", tags="ram_click")
                     x += self.label_font.measure(val_text) + 6
                     
                     # Sparkline
-                    self.draw_sparkline(x, 10, self.ram_usage, theme)
-                    x += 20
+                    if self.show_sparklines:
+                        spark_y = (self.height - 4) // 2
+                        self.draw_sparkline(x, spark_y, self.ram_usage, theme)
+                        x += self.spark_width
                     
                 elif mod == "gpu":
                     # Label
-                    self.canvas.create_text(x, 12, text="GPU ", fill=theme["accent"], font=self.label_font, anchor="w")
+                    self.canvas.create_text(x, self.height // 2, text="GPU ", fill=theme["accent"], font=self.label_font, anchor="w", tags="gpu_click")
                     x += self.label_font.measure("GPU ")
                     
                     # Value
-                    temp_str = f" {self.gpu_temp}°C" if self.gpu_temp else ""
-                    val_text = f"{self.gpu_usage:.0f}%{temp_str}"
-                    self.canvas.create_text(x, 12, text=val_text, fill=theme["text"], font=self.label_font, anchor="w")
-                    x += self.label_font.measure(val_text) + 6
+                    gpu_percent_text = f"{self.gpu_usage:.0f}%"
+                    self.canvas.create_text(x, self.height // 2, text=gpu_percent_text, fill=theme["text"], font=self.label_font, anchor="w", tags="gpu_click")
+                    x += self.label_font.measure(gpu_percent_text)
+                    
+                    # Temperature
+                    if self.gpu_temp is not None:
+                        if self.gpu_temp >= 80:
+                            temp_color = "#EF4444"
+                        elif self.gpu_temp >= 60:
+                            temp_color = "#F59E0B"
+                        else:
+                            temp_color = theme["text"]
+                        temp_text = f" ({self.gpu_temp}°C)"
+                        self.canvas.create_text(x, self.height // 2, text=temp_text, fill=temp_color, font=self.label_font, anchor="w", tags="gpu_click")
+                        x += self.label_font.measure(temp_text)
+                        
+                    x += 6
                     
                     # Sparkline
-                    self.draw_sparkline(x, 10, self.gpu_usage, theme)
-                    x += 20
+                    if self.show_sparklines:
+                        spark_y = (self.height - 4) // 2
+                        self.draw_sparkline(x, spark_y, self.gpu_usage, theme)
+                        x += self.spark_width
                     
                 elif mod == "net":
                     # Label
-                    self.canvas.create_text(x, 12, text="NET ", fill=theme["accent"], font=self.label_font, anchor="w")
+                    self.canvas.create_text(x, self.height // 2, text="NET ", fill=theme["accent"], font=self.label_font, anchor="w", tags="net_click")
                     x += self.label_font.measure("NET ")
                     
                     # Value
                     val_text = self.net_speed_text
-                    self.canvas.create_text(x, 12, text=val_text, fill=theme["text"], font=self.label_font, anchor="w")
+                    self.canvas.create_text(x, self.height // 2, text=val_text, fill=theme["text"], font=self.label_font, anchor="w", tags="net_click")
                     x += self.label_font.measure(val_text)
                     
         self.root.after(100, self.redraw_loop)
+
+    def toggle_lock_position(self):
+        self.lock_position = not self.lock_position
+        self.save_config()
+
+    def toggle_sparklines(self):
+        self.show_sparklines = not self.show_sparklines
+        self.save_config()
+        self.trigger_resize()
+
+    def set_scale(self, scale_name):
+        self.widget_scale = scale_name
+        self.save_config()
+        self.update_scale_parameters()
+        self.trigger_resize()
+
+    def update_scale_parameters(self):
+        if self.widget_scale == "Small":
+            self.height = 20
+            self.font_size = 7
+            self.spark_width = 16
+        elif self.widget_scale == "Large":
+            self.height = 30
+            self.font_size = 11
+            self.spark_width = 24
+        else:  # Medium
+            self.height = 24
+            self.font_size = 9
+            self.spark_width = 20
+        self.label_font = tkfont.Font(family="Segoe UI", size=self.font_size, weight="bold")
+
+    def dock_widget(self, position):
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        margin_x = 20
+        margin_y = 20
+        
+        if position == "Top-Left":
+            x = margin_x
+            y = margin_y
+        elif position == "Top-Center":
+            x = (screen_w - self.width) // 2
+            y = margin_y
+        elif position == "Top-Right":
+            x = screen_w - self.width - margin_x
+            y = margin_y
+        elif position == "Bottom-Left":
+            x = margin_x
+            y = screen_h - self.height - margin_y - 40
+        elif position == "Bottom-Right":
+            x = screen_w - self.width - margin_x
+            y = screen_h - self.height - margin_y - 40
+        else:
+            return
+            
+        self.root.geometry(f"+{x}+{y}")
+        self.save_config()
+
+    def open_utility(self, target):
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            if target == "cpu":
+                subprocess.Popen(["taskmgr.exe"], startupinfo=startupinfo)
+            elif target == "ram":
+                subprocess.Popen(["resmon.exe"], startupinfo=startupinfo)
+            elif target == "gpu":
+                subprocess.Popen(["taskmgr.exe"], startupinfo=startupinfo)
+            elif target == "net":
+                subprocess.Popen(["control.exe", "netconnections"], startupinfo=startupinfo)
+        except Exception:
+            pass
+
+    def on_enter(self, event):
+        self.root.attributes("-alpha", 1.0)
+
+    def on_leave(self, event):
+        self.root.attributes("-alpha", self.opacity)
+
+    def show_widget_tip(self, event):
+        self.on_enter(event)
+        self.tooltip.showtip(self.get_tooltip_text())
+
+    def hide_widget_tip(self, event):
+        self.on_leave(event)
+        self.tooltip.hidetip()
+
+    def move_widget_tip(self, event):
+        if self.tooltip.tipwindow:
+            x = self.root.winfo_pointerx() + 12
+            y = self.root.winfo_pointery() + 15
+            self.tooltip.tipwindow.wm_geometry(f"+{x}+{y}")
+
+    def get_tooltip_text(self):
+        cpu_details = f"CPU: {self.cpu_usage:.0f}%"
+        if self.cpu_temp is not None:
+            cpu_details += f" (Max Temp: {self.cpu_temp}°C)"
+            
+        mem = psutil.virtual_memory()
+        used_gb = mem.used / (1024**3)
+        total_gb = mem.total / (1024**3)
+        ram_details = f"RAM: {self.ram_usage:.0f}% ({used_gb:.1f} GB / {total_gb:.1f} GB)"
+        
+        gpu_details = ""
+        if self.gpu_detected:
+            gpu_details = f"\nGPU: {self.gpu_usage:.0f}%"
+            if self.gpu_temp is not None:
+                gpu_details += f" ({self.gpu_temp}°C)"
+                
+        net_details = f"\nNET: {self.net_speed_text}"
+        
+        return f"{cpu_details}\n{ram_details}{gpu_details}{net_details}\n\n💡 Click modules to open system monitors."
 
     def exit_app(self):
         self.running = False
