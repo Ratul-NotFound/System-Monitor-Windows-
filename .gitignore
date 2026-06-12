@@ -1,0 +1,19 @@
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# PyInstaller build files
+build/
+dist/
+*.spec
+
+# User configuration and logs
+config.json
+diagnose_output.txt
+*.log
+
+# Windows directory files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
