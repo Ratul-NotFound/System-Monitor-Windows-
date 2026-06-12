@@ -56,6 +56,7 @@ class Tooltip:
             tw.destroy()
 
 CONFIG_FILE = "config.json"
+CURRENT_VERSION = "1.1.0"
 
 THEMES = {
     "Ubuntu Classic": {
@@ -207,6 +208,18 @@ class SystemMonitorWidget:
         # Protocol and exit registrations
         self.root.protocol("WM_DELETE_WINDOW", self.exit_app)
         atexit.register(self.cleanup)
+
+        # Cleanup any previous version backup exe (.old)
+        if getattr(sys, 'frozen', False):
+            old_exe = sys.executable + ".old"
+            if os.path.exists(old_exe):
+                try:
+                    os.remove(old_exe)
+                except Exception:
+                    pass
+
+        # Check for updates in background
+        self.check_for_updates()
 
         # Redraw loop
         self.redraw_loop()
@@ -744,6 +757,7 @@ class SystemMonitorWidget:
     # Async hardware reading thread (prevents UI lag)
     def stats_collector_loop(self):
         temp_query_counter = 0
+        gpu_query_counter = 0
         while self.running:
             # CPU Usage
             self.cpu_usage = psutil.cpu_percent(interval=None)
@@ -751,10 +765,10 @@ class SystemMonitorWidget:
             # RAM Usage
             self.ram_usage = psutil.virtual_memory().percent
             
-            # CPU Temperature (Polled every 3 seconds to preserve resources)
+            # CPU Temperature (Polled every 3-6 seconds)
             if temp_query_counter <= 0:
                 self.cpu_temp = self.query_cpu_temp()
-                temp_query_counter = 3
+                temp_query_counter = 3 if self.lhm_initialized else 6
             else:
                 temp_query_counter -= 1
                 
@@ -779,12 +793,23 @@ class SystemMonitorWidget:
             except Exception:
                 pass
             
-            # GPU statistics (polled every second)
+            # GPU statistics (polled every 1-5 seconds)
             if self.gpu_detected:
-                gpu_u, gpu_t = self.get_gpu_stats()
-                if gpu_u is not None:
-                    self.gpu_usage = gpu_u
-                    self.gpu_temp = gpu_t
+                if self.lhm_initialized:
+                    gpu_u, gpu_t = self.get_gpu_stats()
+                    if gpu_u is not None:
+                        self.gpu_usage = gpu_u
+                        self.gpu_temp = gpu_t
+                else:
+                    # Unelevated GPU queries are heavy, poll every 5 seconds
+                    if gpu_query_counter <= 0:
+                        gpu_u, gpu_t = self.get_gpu_stats()
+                        if gpu_u is not None:
+                            self.gpu_usage = gpu_u
+                            self.gpu_temp = gpu_t
+                        gpu_query_counter = 5
+                    else:
+                        gpu_query_counter -= 1
             
             time.sleep(1.0)
 
@@ -985,7 +1010,7 @@ class SystemMonitorWidget:
                     self.canvas.create_text(x, self.height // 2, text=val_text, fill=theme["text"], font=self.label_font, anchor="w", tags="net_click")
                     x += self.label_font.measure(val_text)
                     
-        self.root.after(100, self.redraw_loop)
+        self.root.after(1000, self.redraw_loop)
 
     def toggle_lock_position(self):
         self.lock_position = not self.lock_position
@@ -1113,6 +1138,64 @@ class SystemMonitorWidget:
                 self.lhm_initialized = False
             except Exception:
                 pass
+
+    def check_for_updates(self):
+        def _check():
+            try:
+                import urllib.request
+                # Wait 5 seconds after launch to ensure startup completes smoothly
+                time.sleep(5)
+                
+                url = "https://raw.githubusercontent.com/Ratul-NotFound/System-Monitor-Windows-/main/version.json"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    remote_version = data.get("version")
+                    download_url = data.get("download_url")
+                    
+                    if remote_version and remote_version != CURRENT_VERSION:
+                        self.root.after(0, lambda: self.prompt_update(remote_version, download_url))
+            except Exception:
+                pass
+        
+        threading.Thread(target=_check, daemon=True).start()
+
+    def prompt_update(self, remote_version, download_url):
+        msg = f"A new version of System Monitor (v{remote_version}) is available.\n\nWould you like to download and install it automatically?"
+        if messagebox.askyesno("Update Available", msg):
+            threading.Thread(target=self.perform_update, args=(download_url,), daemon=True).start()
+
+    def perform_update(self, download_url):
+        try:
+            import urllib.request
+            import shutil
+            
+            # Temporary state indicator
+            self.net_speed_text = "Updating..."
+            
+            exe_path = sys.executable
+            new_exe_path = exe_path + ".new"
+            old_exe_path = exe_path + ".old"
+            
+            req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                with open(new_exe_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+            
+            if getattr(sys, 'frozen', False):
+                if os.path.exists(old_exe_path):
+                    try:
+                        os.remove(old_exe_path)
+                    except Exception:
+                        pass
+                os.rename(exe_path, old_exe_path)
+                os.rename(new_exe_path, exe_path)
+                subprocess.Popen([exe_path])
+                self.root.after(0, self.exit_app)
+            else:
+                messagebox.showinfo("Update Complete", f"Downloaded to:\n{new_exe_path}\n\nPlease replace the file to run the new version.")
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Update Failed", f"Auto-update failed: {e}"))
 
     def exit_app(self):
         self.cleanup()
