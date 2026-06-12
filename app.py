@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import threading
+import atexit
 import tkinter as tk
 from tkinter import Menu, messagebox
 from tkinter import font as tkfont
@@ -203,6 +204,10 @@ class SystemMonitorWidget:
         self.stats_thread = threading.Thread(target=self.stats_collector_loop, daemon=True)
         self.stats_thread.start()
         
+        # Protocol and exit registrations
+        self.root.protocol("WM_DELETE_WINDOW", self.exit_app)
+        atexit.register(self.cleanup)
+
         # Redraw loop
         self.redraw_loop()
 
@@ -1080,15 +1085,23 @@ class SystemMonitorWidget:
         
         return f"{cpu_details}\n{ram_details}{gpu_details}{net_details}\n\n💡 Click modules to open system monitors."
 
-    def exit_app(self):
+    def cleanup(self):
         self.running = False
-        if self.lhm_initialized and self.lhm_computer:
+        if hasattr(self, 'lhm_initialized') and self.lhm_initialized and self.lhm_computer:
             try:
                 self.lhm_computer.Close()
+                self.lhm_computer = None
+                self.lhm_initialized = False
             except Exception:
                 pass
+
+    def exit_app(self):
+        self.cleanup()
         self.save_config()
-        self.root.destroy()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
         sys.exit(0)
 
 if __name__ == "__main__":
